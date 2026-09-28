@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.log
+
+# GROMACS output—adjust to what you want tracked
+*.xtc
+*.trr
+*.edr
+*.cpt
+*.tpr
