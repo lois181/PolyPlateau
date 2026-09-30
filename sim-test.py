@@ -15,22 +15,26 @@ import glob
 import red
 import numpy as np
 
-class detect_equilibration():
+class equilibrate_polymer():
 
     NS_TO_PS = 1000 # conversion from ns to ps- not neccessary I just like using ns  
 
     @classmethod
-    def ns_to_ps(cls, value_ns):
-        return value_ns * cls.NS_TO_PS
+    def ns_to_ps(cls, value):
+        try:
+            return float(value) * 1000
+        except (TypeError, ValueError):
+            raise ValueError(f"{value!r} is not a valid number")
 
-    def __init__(self, max_time_ns, sim_len_ns, prod_len, workdir="."):
+    def __init__(self, max_time_ns:float, sim_len_ns:float, prod_len:float, workdir="."):
 
-        self.max_time_ns = detect_equilibration.ns_to_ps(max_time_ns) # maximum total simulation time
-        self.sim_len_ns = detect_equilibration.ns_to_ps(sim_len_ns) # length of each sub-simulation before checking equilibration
-        self.prod_len = detect_equilibration.ns_to_ps(prod_len) # minimum required time in production region
-
-        self.workdir = Path(workdir)
-
+        self.max_time_ns = self.ns_to_ps(max_time_ns) # maximum total simulation time
+        self.sim_len_ns = self.ns_to_ps(sim_len_ns) # length of each sub-simulation before checking equilibration
+        self.prod_len = self.ns_to_ps(prod_len) # minimum required time in production region
+        self.workdir = Path(workdir).resolve()
+        if self.prod_len >= self.max_time_ns:
+            raise ValueError("You must specify a minimum production time less than the maximum allowed simulation length.")
+        
          
     def initialise_files(self):
         """Prepare files for first simulation"""
@@ -55,7 +59,7 @@ class detect_equilibration():
         time_step = 0.001
         n_steps = round((self.sim_len_ns) / 0.001)
 
-        with open(f"{self.files["mdp"]}", "r") as file:
+        with open(self.files["mdp"], "r") as file:
             lines = file.readlines() # list of lines
 
         for index, line in enumerate(lines):
@@ -65,7 +69,7 @@ class detect_equilibration():
         else: # execute when for loop finished
             raise ValueError("Missing nsteps. Check your mdp file.")
 
-        with open(f"{self.files["mdp"]}", "w") as file:
+        with open(self.files["mdp"], "w") as file:
             file.writelines(lines)
 
 
@@ -95,7 +99,8 @@ class detect_equilibration():
             print(f"grompp failed with exit code {error.returncode}.")
             return False
 
-        self.tpr = self.workdir / "topol.tpr"
+        self.tpr = self.workdir / output
+        self.tpr_number = 0 # keep track of tpr files for continuations 
 
         return True 
 
@@ -103,12 +108,14 @@ class detect_equilibration():
         """Perform mdrun"""
 
         if continuation:
+            next_number = self.tpr_number + 1
+            next_tpr = self.workdir / f"topol{next_number}.tpr"
             command_tpr = [
                 "gmx_mpi",
                 "convert-tpr",
                 "-s", self.tpr,
-                "-extend", self.sim_len_ns,
-                "-o", "extend.tpr"
+                "-extend", str(self.sim_len_ns),
+                "-o", next_tpr
             ] 
 
             try:
@@ -124,8 +131,8 @@ class detect_equilibration():
             command_mdrun = [
                 "gmx_mpi",
                 "mdrun",
-                "-s", "extend.tpr",
-                "-cpi", "state.cpi"
+                "-s", next_tpr,
+                "-cpi", "state.cpt"
             ] 
 
             try:
@@ -137,6 +144,9 @@ class detect_equilibration():
             except subprocess.CalledProcessError as error: 
                 print(f"continuation mdrun failed with exit code {error.returncode}.")
                 return False
+
+            self.tpr = next_tpr
+            self.tpr_number = next_number
 
         else:
 
@@ -192,6 +202,7 @@ class detect_equilibration():
                 cwd=self.workdir,
                 check=True,
                 input = "0\n",
+                text = True,
             )
         except subprocess.CalledProcessError as error:
             print(f"gmx polystat failed with exit code {error.returncode}.")
@@ -249,28 +260,66 @@ class detect_equilibration():
 
 class equilibration_workflow:
 
-    def __init__(self, simulation):
+    def __init__(self, simulation:equilibrate_polymer):
         """Accepts instance of detect_equilibration"""
 
         self.simulation = simulation
 
     def run(self):
 
-        self.simulation.perform_grompp() # grompp
-        self.simulation.perform_mdrun(continuation=False)
+        self.simulation.initialise_files()
+        if not self.simulation.perform_grompp(): # grompp
+            return False 
+        
+        if not self.simulation.perform_mdrun(continuation=False):
+            return False 
 
         max_time = self.simulation.max_time_ns
-        current_time = self.simulation.sim_time_ns
-        prod_time = self.simulation.max_prod
+        current_time = self.simulation.sim_len_ns
+        prod_time = self.simulation.prod_len
 
-        # should handle the case where they try a max time less than block size 
+        while current_time < max_time: 
+            if not self.simulation.perform_mdrun(continuation=True):
+                return False
 
-
-        while current_time <= max_time: 
-            self.simulation.perform_mdrun(continuation=True)
+            current_time += self.simulation.sim_len_ns
 
             if current_time > prod_time:
+                if not self.simulation.gmx_polystat_energy(): # extract data
+                    return False 
                 
+                if self.simulation.check_equilibration_red():
+                    print("Equilibration has been detected. Halting simulation...")
+                    return True 
+                else:
+                    print("Equilibration not detected. Continuing simulation...")
+                    #current_time += self.simulation.sim_len_ns # need better variable names 
+                    continue
+            else:
+                print("Simulation not long enough to encompass required minimum production region. Continuing...")
+                #current_time += self.simulation.sim_len_ns 
+                continue # production time required is less than the length of the current simulation 
+        else:
+            print("Simulation time has exceeded the maximum allowed time. System is not equilibrated.")
+            return False
+
+        # start current time 10 max time 30
+        # current time less than max time so perform continuation mdrun
+        # current time greater than production time, check for equilibration and return true if true 
+        # if false, continue
+        # if max time exceeded return false 
+
+        # if current time is less than minimum required production time, we should continue through loop
+
+
+# create instance of equilibrate_polymer 
+
+
+polymer = equilibrate_polymer(max_time_ns=1, sim_len_ns=0.1, prod_len=0.2)
+
+equilibrate = equilibration_workflow(polymer)
+
+equilibrate.run()
 
 
 
