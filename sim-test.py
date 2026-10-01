@@ -8,6 +8,17 @@
 # 3. if xtc length is greater than required equilibration, check for equilibration and pass or fail 
 # 4. keep a counter of total time for runs and warn user not equilibrated or stop if equilibrated and output plots + final data
 
+# To-do for my own quality of life:
+# Options to specify specific command "gmx_mpi", "mpirun gmx_mpi -nt" etc.
+# If index file not found, make one 
+# Default mdp file 
+# On-the-fly version? (larger work)
+# Run using a pre-exisisting state file from another simulation - use current logic in new run with -noappend flag 
+# Print out plot regardless of equilibration outcome
+# Also print raw data 
+# option to provide .xtc names 
+
+
 import subprocess
 from pathlib import Path
 import os 
@@ -26,12 +37,14 @@ class equilibrate_polymer():
         except (TypeError, ValueError):
             raise ValueError(f"{value!r} is not a valid number")
 
-    def __init__(self, max_time_ns:float, sim_len_ns:float, prod_len:float, workdir="."):
+    def __init__(self, max_time_ns:float, sim_len_ns:float, prod_len:float, g_command:str="gmx", workdir="."):
 
         self.max_time_ns = self.ns_to_ps(max_time_ns) # maximum total simulation time
         self.sim_len_ns = self.ns_to_ps(sim_len_ns) # length of each sub-simulation before checking equilibration
         self.prod_len = self.ns_to_ps(prod_len) # minimum required time in production region
         self.workdir = Path(workdir).resolve()
+        self.g_command = g_command 
+
         if self.prod_len >= self.max_time_ns:
             raise ValueError("You must specify a minimum production time less than the maximum allowed simulation length.")
         
@@ -80,7 +93,7 @@ class equilibrate_polymer():
         output = "topol.tpr"
 
         command = [
-            "gmx_mpi",
+            "gmx",
             "grompp",
             "-f", self.files["mdp"],
             "-c", self.files["gro"],
@@ -111,7 +124,7 @@ class equilibrate_polymer():
             next_number = self.tpr_number + 1
             next_tpr = self.workdir / f"topol{next_number}.tpr"
             command_tpr = [
-                "gmx_mpi",
+                "gmx",
                 "convert-tpr",
                 "-s", self.tpr,
                 "-extend", str(self.sim_len_ns),
@@ -129,10 +142,11 @@ class equilibrate_polymer():
                 return False
 
             command_mdrun = [
-                "gmx_mpi",
+                self.g_command,
                 "mdrun",
                 "-s", next_tpr,
-                "-cpi", "state.cpt"
+                "-cpi", "state.cpt",
+                "-nt", str(8)
             ] 
 
             try:
@@ -151,9 +165,10 @@ class equilibrate_polymer():
         else:
 
             command_mdrun = [
-                "gmx_mpi",
+                self.g_command,
                 "mdrun",
-                "-s", self.tpr
+                "-s", self.tpr,
+                "-nt", str(8)
             ]   
 
             try:
@@ -190,7 +205,7 @@ class equilibrate_polymer():
 
 
         command_polystat = [
-            "gmx_mpi",
+            "gmx",
             "polystat",
             "-f", self.files["xtc"],
             "-s", self.tpr
@@ -210,7 +225,7 @@ class equilibrate_polymer():
 
 
         command_energy = [
-            "gmx_mpi",
+            "gmx",
             "energy",
             "-f", self.files["edr"]
         ]
@@ -260,7 +275,7 @@ class equilibrate_polymer():
 
 class equilibration_workflow:
 
-    def __init__(self, simulation:equilibrate_polymer):
+    def __init__(self, simulation:equilibrate_polymer, new_sim = True):
         """Accepts instance of detect_equilibration"""
 
         self.simulation = simulation
@@ -315,7 +330,7 @@ class equilibration_workflow:
 # create instance of equilibrate_polymer 
 
 
-polymer = equilibrate_polymer(max_time_ns=1, sim_len_ns=0.1, prod_len=0.2)
+polymer = equilibrate_polymer(max_time_ns=0.6, sim_len_ns=0.1, prod_len=0.2)
 
 equilibrate = equilibration_workflow(polymer)
 

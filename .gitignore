@@ -10,3 +10,4 @@ __pycache__/
 *.edr
 *.cpt
 *.tpr
+*.itp
