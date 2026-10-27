@@ -1,31 +1,7 @@
-# code to run GROMACS MD simulation in 10ns blocks- check for equilibration after each block
-# user input length of simulations, desired length of production region and maximum simulation time 
-
-# following methods:
-
-# 1. find an mdp file, topology file, index file and pre-existing .xtc file, raise error if not there
-# 2. if xtc length is less than required equilibration time, run a continuation 
-# 3. if xtc length is greater than required equilibration, check for equilibration and pass or fail 
-# 4. keep a counter of total time for runs and warn user not equilibrated or stop if equilibrated and output plots + final data
-
-# To-do for my own quality of life:
-# Options to specify specific command "gmx_mpi", "mpirun gmx_mpi -nt" etc.
-# If index file not found, make one 
-# Default mdp file 
-# On-the-fly version? (larger work)
-# Run using a pre-exisisting state file from another simulation - use current logic in new run with -noappend flag 
-# Print out plot regardless of equilibration outcome
-# Also print raw data 
-# option to provide .xtc names 
-# add option for full mdrun command in case users have tables 
-
-# plan:
-# 1. property calculation should be done based on property selected and then results written to a monitoring csv which can then
-# be read and each property in there can be tracked. The tracking will have a single version and multiple version
-
 from importlib.resources import contents
 from operator import index
 import subprocess
+import shlex
 from pathlib import Path
 import os 
 import glob
@@ -37,6 +13,7 @@ from datetime import datetime, timedelta
 from mannkendall import mk_white
 from scipy.stats import kendalltau
 import warnings 
+import matplotlib.pyplot as plt
 
 class equilibrate_polymer():
 
@@ -61,13 +38,14 @@ class equilibrate_polymer():
         return np.round(1 - conf / 100, 3)
 
 
-    def __init__(self, max_time_ns:float, sim_len_ns:float, prod_len:float, equil_properties: list[str], g_command:str="gmx", workdir=".", confidence:float=95):
+    def __init__(self, max_time_ns:float, sim_len_ns:float, prod_len:float, equil_properties: list[str], g_ver:str="gmx", mdrun_preamble: str="", workdir=".", confidence:float=95):
 
         self.max_time_ns = self.ns_to_ps(max_time_ns) # maximum total simulation time
         self.sim_len_ns = self.ns_to_ps(sim_len_ns) # length of each sub-simulation before checking equilibration
         self.prod_len = self.ns_to_ps(prod_len) # minimum required time in production region
         self.workdir = Path(workdir).resolve()
-        self.g_command = g_command 
+        self.g_ver = g_ver 
+        self.mdrun_preamble = mdrun_preamble
         self.confidence = self.confidence_to_threshold(confidence)
         self.equil_properties = equil_properties
 
@@ -107,11 +85,20 @@ class equilibrate_polymer():
 
         # modify run-time of mdp file
 
-        time_step = 0.001
-        n_steps = round((self.sim_len_ns) / 0.001)
-
         with open(self.files["mdp"], "r") as file:
             lines = file.readlines() # list of lines
+
+        # read time step from mdp file
+        for index, line in enumerate(lines):
+            if line.strip().startswith("dt"):
+                parts = line.split(";", 1)[0].split("=", 1)
+                if len(parts) == 2:
+                    try:
+                        time_step = float(parts[1].strip())
+                        n_steps = round((self.sim_len_ns) / time_step)
+                    except ValueError:
+                        raise ValueError(f"Invalid dt value in mdp file: {parts[1].strip()}")
+                break
 
         for index, line in enumerate(lines):
             if line.strip().startswith("nsteps"):
@@ -124,14 +111,13 @@ class equilibrate_polymer():
             file.writelines(lines)
 
 
-
     def perform_grompp(self):
         """Create a tpr file to begin simulation. Uses default naming for GROMACS files."""
 
         output = "topol.tpr"
 
         command = [
-            "gmx",
+            self.g_ver,
             "grompp",
             "-f", self.files["mdp"],
             "-c", self.files["gro"],
@@ -158,11 +144,16 @@ class equilibrate_polymer():
     def perform_mdrun(self, continuation=True):
         """Perform mdrun"""
 
+        preamble = [
+            os.path.expandvars(arg)
+            for arg in shlex.split(self.mdrun_preamble)
+        ]
+
         if continuation:
             next_number = self.tpr_number + 1
             next_tpr = self.workdir / f"topol{next_number}.tpr"
             command_tpr = [
-                "gmx",
+                self.g_ver,
                 "convert-tpr",
                 "-s", self.tpr,
                 "-extend", str(self.sim_len_ns),
@@ -179,12 +170,11 @@ class equilibrate_polymer():
                 print(f"convert-tpr failed with exit code {error.returncode}.")
                 return False
 
-            command_mdrun = [
-                self.g_command,
+            command_mdrun = preamble + [
+                self.g_ver,
                 "mdrun",
                 "-s", next_tpr,
                 "-cpi", "state.cpt",
-                "-nt", str(8)
             ] 
 
             try:
@@ -202,11 +192,10 @@ class equilibrate_polymer():
 
         else:
 
-            command_mdrun = [
-                self.g_command,
+            command_mdrun = preamble + [
+                self.g_ver,
                 "mdrun",
                 "-s", self.tpr,
-                "-nt", str(8)
             ]   
 
             try:
@@ -244,7 +233,7 @@ class equilibrate_polymer():
         if "rg" in self.equil_properties:
 
             command_polystat = [
-                "gmx",
+                self.g_ver,
                 "polystat",
                 "-f", self.files["xtc"],
                 "-s", self.tpr
@@ -275,7 +264,7 @@ class equilibrate_polymer():
         if energy_groups:
 
             command_energy = [
-                "gmx",
+                self.g_ver,
                 "energy",
                 "-f", self.files["edr"]
             ]
@@ -308,9 +297,7 @@ class equilibrate_polymer():
 
             rg_data = np.loadtxt(rg_file, comments=["@", "#"], ndmin=2)
 
-            columns.append(rg_data[:, 0])
-            columns.append(rg_data[:, 2])
-            headers.append("rg")
+            np.savetxt(self.workdir / "equil_rg.csv", rg_data[:, [0, 2]], delimiter=",", header="time,rg", comments="")
 
         if "density" in self.equil_properties or "potential" in self.equil_properties:
             energy_file = self.workdir / "energy.xvg"
@@ -321,50 +308,38 @@ class equilibrate_polymer():
 
             energy_data = np.loadtxt(energy_file, comments=["@", "#"], ndmin=2)
 
-            if not columns:
-                columns.append(energy_data[:, 0])
-
             for index, prop in enumerate(energy_groups, start=1):
-                columns.append(energy_data[:, index])
-                headers.append(prop)
+                prop = prop.lower()
 
-        with open(self.workdir / "equil_properties.csv", "w") as file:
-            np.savetxt(
-                file,
-                np.column_stack(columns),
-                delimiter=",",
-                header=",".join(headers),
-                comments="",
-            )
+                np.savetxt(self.workdir / f"equil_{prop}.csv", energy_data[:, [0, index]], delimiter=",", header=f"time,{prop}", comments="")
+
 
         return True 
 
     def check_equilibration_red(self):
-        """Check (currently only) density for equilibration using RED library. 
-        If self.max_time_ns exists beyond equilibration time, return True, else return False. 
-        """
+        """Return the common production start, or None if insufficient data remains."""
 
-        equil_file = self.workdir / "equil_properties.csv"
-
-        if not equil_file.exists():
-            raise FileNotFoundError("equil_properties.csv file not found.")
-
-        equil_data = pd.read_csv(equil_file)
-
-        # Match lowercase property names to CSV headers such as "Density".
-        equil_data.columns = equil_data.columns.str.lower()
-
-        time = equil_data["time"].to_numpy()
         equil_results = {}
+        property_times = {}
 
         for prop in self.equil_properties:
+            equil_file = self.workdir / f"equil_{prop}.csv"
+
+            if not equil_file.exists():
+                raise FileNotFoundError(f"equil_{prop}.csv file not found.")
+
+            equil_data = pd.read_csv(equil_file)
+            equil_data.columns = equil_data.columns.str.lower()
+
+            time = equil_data["time"].to_numpy()
             prop_data = equil_data[prop].to_numpy()
+            property_times[prop] = time
 
             eq_time, g, ess = red.detect_equilibration_window(
                 prop_data,
                 method="min_sse",
                 times=time,
-                plot=True,
+                plot=False,
                 data_y_label=prop,
                 plot_name=str(self.workdir / f"equil_test_{prop}_{time[-1]}.png"),
                 time_units="ps",
@@ -374,6 +349,8 @@ class equilibrate_polymer():
                 "eq_time": eq_time,
                 "g": g,
                 "ess": ess,
+                "time": time,
+                "values": prop_data,
             }
 
         eq_time = max(
@@ -381,10 +358,54 @@ class equilibrate_polymer():
             for prop in self.equil_properties
         )
 
-        if time[-1] - eq_time >= self.prod_len:
-            return eq_time
+        failures = {}
 
-        return None
+        for prop in self.equil_properties:
+            production_times = property_times[prop][
+                property_times[prop] >= eq_time
+            ]
+
+            if len(production_times) < 2:
+                production_duration = 0.0
+            else:
+                production_duration = (
+                    production_times[-1] - production_times[0]
+                )
+
+            if len(production_times) < 2 or production_duration < self.prod_len:
+                failures[prop] = {
+                    "reason": "Production too short",
+                    "eq_time": equil_results[prop]["eq_time"],
+                    "production_start": eq_time,
+                    "production_duration": production_duration,
+                    "required_duration": self.prod_len,
+                }
+
+        # Retain every property's RED results for plotting
+        self.equil_results = equil_results
+
+        if failures:
+            return failures
+
+        return eq_time
+
+        # eq_time = max(
+        #     equil_results[prop]["eq_time"]
+        #     for prop in self.equil_properties
+        # )
+
+        # for prop in self.equil_properties:
+        #     production_times = property_times[prop][
+        #         property_times[prop] >= eq_time
+        #     ]
+
+        #     if len(production_times) < 2:
+        #         return None
+
+        #     if production_times[-1] - production_times[0] < self.prod_len:
+        #         return None
+
+        # return eq_time
 
     def perform_mann_kendall_test(self, data):
         """Input: data array (1,).
@@ -444,6 +465,11 @@ class equilibrate_polymer():
 
             whitened = whitened[valid]
 
+            if len(whitened) < 10:
+                raise ValueError(f"Column {column}: Fewer than 10 valid data points after pre-whitening.")
+
+            print(f"Analysing {len(whitened)} valid data points for property number {column} after pre-whitening...")
+
             if np.all(whitened == whitened[0]): # if all values are the same 
                 raise ValueError("All data values are identical. Something has gone wrong.")
             else:
@@ -476,6 +502,37 @@ class equilibration_workflow:
 
         self.simulation = simulation
 
+    def plot_equilibration(self, prop, time, values, eq_time, reason):
+
+        results_dir = self.simulation.workdir / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        time_ns = time / 1000
+
+        fig, ax = plt.subplots()
+
+        ax.plot(time_ns, values, linewidth=0.8)
+        ax.axvline(
+            eq_time / 1000,
+            color="red",
+            linestyle=":",
+            label=f"RED equilibration: {eq_time / 1000:g} ns",
+        )
+
+        ax.set_xlabel("Time (ns)")
+        ax.set_ylabel(prop)
+        ax.set_title(
+            f"{prop}: {reason}\n"
+            f"{time_ns[0]:g}–{time_ns[-1]:g} ns"
+        )
+        ax.legend()
+
+        filename = f"{prop}_{time_ns[0]:g}-{time_ns[-1]:g}ns.png"
+
+        fig.tight_layout()
+        fig.savefig(results_dir / filename, dpi=200)
+        plt.close(fig)
+
     def run(self):
 
         self.simulation.initialise_files()
@@ -499,32 +556,74 @@ class equilibration_workflow:
                 if not self.simulation.gmx_polystat_energy(): # extract data
                     return False
 
-                eq_time = self.simulation.check_equilibration_red()
+                red_result = self.simulation.check_equilibration_red()
 
-                if eq_time is not None:
+                if isinstance(red_result, dict):
+                    failures = red_result
+                    eq_time = max(
+                        result["eq_time"]
+                        for result in self.simulation.equil_results.values()
+                    )
+                else:
+                    failures = {}
+                    eq_time = red_result
                     print("Minimum production length detected. Running Mann-Kendall test...")
 
-                    equil_file = self.simulation.workdir / "equil_properties.csv"
+                property_results = {}
+
+                for prop in self.simulation.equil_properties:
+                    equil_file = self.simulation.workdir / f"equil_{prop}.csv"
                     equil_data = pd.read_csv(equil_file)
                     equil_data.columns = equil_data.columns.str.lower()
 
-                    # Only test the production region and selected properties
-                    production_data = equil_data.loc[
-                        equil_data["time"] >= eq_time,
-                        ["time", *self.simulation.equil_properties]
-                    ]
-
-                    data_array = production_data.to_numpy()
-                    mk_results = self.simulation.perform_mann_kendall_test(data_array)
-
-                    if mk_results:
-                        print("Mann-Kendall test indicates a significant trend. System is not equilibrated.")
-                        continue
+                    if prop in failures:
+                        failure = failures[prop]
+                        passed = False
+                        reason = (
+                            "FAIL — production too short "
+                            f"({failure['production_duration'] / 1000:g} ns; "
+                            f"required {failure['required_duration'] / 1000:g} ns)"
+                        )
                     else:
-                        print("Mann-Kendall test does not indicate a significant trend. System is equilibrated.")
-                        return True
+                        production_data = equil_data.loc[
+                            equil_data["time"] >= eq_time,
+                            ["time", prop]
+                        ]
+
+                        print(f"Running Mann-Kendall test for {prop}...")
+
+                        data_array = production_data.to_numpy()
+                        has_trend = self.simulation.perform_mann_kendall_test(
+                            data_array
+                        )
+
+                        passed = not has_trend
+
+                        if has_trend:
+                            reason = "FAIL — significant trend detected by MK"
+                        else:
+                            reason = "PASS"
+
+                    property_results[prop] = {
+                        "passed": passed,
+                        "reason": reason,
+                    }
+
+                    self.plot_equilibration(
+                        prop,
+                        equil_data["time"].to_numpy(),
+                        equil_data[prop].to_numpy(),
+                        self.simulation.equil_results[prop]["eq_time"],
+                        reason,
+                    )
+
+                self.property_results = property_results
+
+                if all(result["passed"] for result in property_results.values()):
+                    print("All properties passed. System is equilibrated.")
+                    return True
                 else:
-                    print("Equilibration not detected. Continuing simulation...")
+                    print("One or more properties failed. Continuing simulation...")
                     continue
             else:
                 print("Simulation not long enough to encompass required minimum production region. Continuing...")
@@ -533,24 +632,34 @@ class equilibration_workflow:
             print("Maximum simulation time reached or exceeded. System is not equilibrated.")
             return False
 
-        # start current time 10 max time 30
-        # current time less than max time so perform continuation mdrun
-        # current time greater than production time, check for equilibration and return true if true 
-        # if false, continue
-        # if max time exceeded return false 
 
-        # if current time is less than minimum required production time, we should continue through loop
+# example usage:
+# Code performs simulations in increments of sim_len_ns. After each simulation it checks for the 
+# minimum long run variance equilibration time using the RED package and requires a production period
+# of at least prod_len. If production period is too short, simulations are continued. If long enough, it
+# performs a modified version of the Mann-Kendall test with confidence level (confidence) of default
+# 95%. If no evidence of trend is found, halt simulation. 
 
+# For multiple properties (supported: density, rg, potential), the maximum equilibration time is used as 
+# the common production start. If any property fails, simulation continues until either all properties pass or max_time_ns is reached.
 
-# create instance of equilibrate_polymer 
+# Assumed version of gromacs is non-mpi. Options below to specify gmx_mpi and also mdrun preamble e.g. mpirun
 
+# Code searches for .top, .mdp, .ndx and .gro files in working directory. I'm assuming use of default file names for now and a 
+# simulation that isn't a continuation of a pre-exisiting simulation (it relies on appending to the current xtc on every
+# simulation extension which is problematic if you've previously moved around files in GROMACS).
 
-polymer = equilibrate_polymer(max_time_ns=0.6, sim_len_ns=0.1, prod_len=0.2)
+polymer = equilibrate_polymer(
+    max_time_ns=50,
+    sim_len_ns=10,
+    prod_len=10,
+    equil_properties=["density", "potential"],
+    g_ver="gmx_mpi",
+    mdrun_preamble="mpirun",
+    confidence=99,
+    workdir=".",
+)
 
 equilibrate = equilibration_workflow(polymer)
-
 equilibrate.run()
-
-
-
         
