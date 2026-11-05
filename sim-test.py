@@ -38,7 +38,7 @@ class equilibrate_polymer():
         return np.round(1 - conf / 100, 3)
 
 
-    def __init__(self, max_time_ns:float, sim_len_ns:float, prod_len:float, equil_properties: list[str], g_ver:str="gmx", mdrun_preamble: str="", workdir=".", confidence:float=95):
+    def __init__(self, max_time_ns:float, sim_len_ns:float, prod_len:float, equil_properties: list[str], g_ver:str="gmx", mdrun_preamble: str="", workdir=".", confidence:float=95, use_index=False):
 
         self.max_time_ns = self.ns_to_ps(max_time_ns) # maximum total simulation time
         self.sim_len_ns = self.ns_to_ps(sim_len_ns) # length of each sub-simulation before checking equilibration
@@ -48,6 +48,7 @@ class equilibrate_polymer():
         self.mdrun_preamble = mdrun_preamble
         self.confidence = self.confidence_to_threshold(confidence)
         self.equil_properties = equil_properties
+        self.use_index = use_index 
 
         if self.prod_len >= self.max_time_ns:
             raise ValueError("You must specify a minimum production time less than the maximum allowed simulation length.")
@@ -68,7 +69,7 @@ class equilibrate_polymer():
     def initialise_files(self):
         """Prepare files for first simulation"""
 
-        extensions = ("mdp", "top", "ndx", "gro")
+        extensions = ("mdp", "top", "gro")
         self.files = {}
 
         for extension in extensions:
@@ -82,6 +83,21 @@ class equilibrate_polymer():
                 print(f"More than one {extension} file detected. Using first one found.")
 
             self.files[extension] = files[0]
+
+        if not self.use_index:
+            command = [self.g_ver, "make_ndx", "-f", str(self.files["gro"]), "-o", "index.ndx"]
+            subprocess.run(command, cwd=self.workdir, check=True)
+            self.files["ndx"] = self.workdir / "index.ndx"
+        else:
+            files = list(self.workdir.glob("*.ndx"))
+
+            if not files:
+                raise FileNotFoundError("Some files are missing. Required files are: *tpr, *mdp, *top and *ndx")
+
+            if len(files) > 1:
+                print(f"More than one ndx file detected. Using first one found.")
+
+            self.files["ndx"] = files[0]
 
         # modify run-time of mdp file
 
