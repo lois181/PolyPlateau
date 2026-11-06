@@ -334,7 +334,7 @@ class equilibrate_polymer():
         return True 
 
     def check_equilibration_red(self):
-        """Return the common production start, or None if insufficient data remains."""
+        """Check individual production lengths; return failures or the common start."""
 
         equil_results = {}
         property_times = {}
@@ -379,7 +379,7 @@ class equilibrate_polymer():
 
         for prop in self.equil_properties:
             production_times = property_times[prop][
-                property_times[prop] >= eq_time
+                property_times[prop] >= equil_results[prop]["eq_time"]
             ]
 
             if len(production_times) < 2:
@@ -393,7 +393,7 @@ class equilibrate_polymer():
                 failures[prop] = {
                     "reason": "Production too short",
                     "eq_time": equil_results[prop]["eq_time"],
-                    "production_start": eq_time,
+                    "production_start": equil_results[prop]["eq_time"],
                     "production_duration": production_duration,
                     "required_duration": self.prod_len,
                 }
@@ -424,10 +424,11 @@ class equilibrate_polymer():
 
         # return eq_time
 
-    def perform_mann_kendall_test_hr(self, data):
+    def perform_mann_kendall_test_hr(self, data, return_results=False):
         """Input: data array (1,).
                 Performs a Mann-Kendall test with the Hamed-Rao variance correction.
-                Returns: MK p-value. Less than the confidence threshold rejects the null hypothesis (finds evidence of a trend)"""
+                Returns: True if any tested column has a significant trend.
+                With return_results=True, also returns per-column p-values and significance."""
 
         data = np.asarray(data, dtype=float)
 
@@ -458,7 +459,7 @@ class equilibrate_polymer():
             result = mk.hamed_rao_modification_test(values[valid].copy(), lag=lag, alpha=self.confidence)
             p_value = float(result.p)
 
-            if not np.isfinite(p_value) or not 0 <= p <= 1:
+            if not np.isfinite(p_value) or not 0 <= p_value <= 1:
                 raise ValueError(f"Column {column}: MK test returned an undefined result.")
 
             results[column] = {"p": float(p_value), "significant": bool(p_value <= self.confidence)}
@@ -468,7 +469,10 @@ class equilibrate_polymer():
                 f"p={result['p']:.3f}, significant={result['significant']}"
             )
 
-        return any(result["significant"] for result in results.values()) 
+        has_trend = any(result["significant"] for result in results.values())
+        if return_results:
+            return has_trend, results
+        return has_trend 
 
 
 
@@ -511,8 +515,54 @@ class equilibration_workflow:
         fig.savefig(results_dir / filename, dpi=200)
         plt.close(fig)
 
+    def write_assessment_csv(self, property_results):
+        """Write one row per property per assessment; all time ranges are in ns.
+
+        Rewrites this run's accumulated history after each assessment so earlier
+        assessments remain available even if the simulation later fails.
+        """
+        for prop in self.simulation.equil_properties:
+            red_result = self.simulation.equil_results[prop]
+            result = property_results[prop]
+            time = red_result["time"]
+            production_times = time[time >= red_result["eq_time"]]
+
+            assessed_period = (
+                f"{time[0] / 1000:g} - {time[-1] / 1000:g} "
+                f"({(time[-1] - time[0]) / 1000:g} ns)"
+            )
+
+            if len(production_times):
+                production_period = (
+                    f"{production_times[0] / 1000:g} - "
+                    f"{production_times[-1] / 1000:g} "
+                    f"({(production_times[-1] - production_times[0]) / 1000:g} ns)"
+                )
+            else:
+                production_period = "N/A"
+
+            self.assessment_rows.append({
+                "property": prop,
+                "total time period assessed (ns)": assessed_period,
+                "production period identified (ns)": production_period,
+                "pass/fail on production length": result["production_length_status"],
+                "MK test p value": result["mk_p_value"],
+                "pass/fail on MK": result["mk_status"],
+                "overall": "PASS" if result["passed"] else "FAIL",
+                "reason": (
+                    "Minimum production length met; no significant trend detected by MK"
+                    if result["passed"] else result["reason"]
+                ),
+            })
+
+        results_dir = self.simulation.workdir / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        self.assessment_csv = results_dir / "equilibration_assessments.csv"
+        pd.DataFrame(self.assessment_rows).to_csv(self.assessment_csv, index=False)
+
     def run(self):
 
+        self.assessment_rows = []
         self.simulation.initialise_files()
         if not self.simulation.perform_grompp(): # grompp
             return False
@@ -554,6 +604,11 @@ class equilibration_workflow:
                     equil_data = pd.read_csv(equil_file)
                     equil_data.columns = equil_data.columns.str.lower()
 
+                    property_start = self.simulation.equil_results[prop]["eq_time"]
+                    mk_p_value = "N/A"
+                    mk_status = "N/A"
+                    production_length_status = "FAIL" if prop in failures else "PASS"
+
                     if prop in failures:
                         failure = failures[prop]
                         passed = False
@@ -564,16 +619,18 @@ class equilibration_workflow:
                         )
                     else:
                         production_data = equil_data.loc[
-                            equil_data["time"] >= eq_time,
+                            equil_data["time"] >= property_start,
                             ["time", prop]
                         ]
 
                         print(f"Running Mann-Kendall test for {prop}...")
 
                         data_array = production_data.to_numpy()
-                        has_trend = self.simulation.perform_mann_kendall_test_hr(
-                            data_array
+                        has_trend, mk_results = self.simulation.perform_mann_kendall_test_hr(
+                            data_array, return_results=True
                         )
+                        mk_p_value = mk_results[1]["p"]
+                        mk_status = "FAIL" if has_trend else "PASS"
 
                         passed = not has_trend
 
@@ -585,17 +642,21 @@ class equilibration_workflow:
                     property_results[prop] = {
                         "passed": passed,
                         "reason": reason,
+                        "production_length_status": production_length_status,
+                        "mk_p_value": mk_p_value,
+                        "mk_status": mk_status,
                     }
 
                     self.plot_equilibration(
                         prop,
                         equil_data["time"].to_numpy(),
                         equil_data[prop].to_numpy(),
-                        self.simulation.equil_results[prop]["eq_time"],
+                        property_start,
                         reason,
                     )
 
                 self.property_results = property_results
+                self.write_assessment_csv(property_results)
 
                 if all(result["passed"] for result in property_results.values()):
                     print("All properties passed. System is equilibrated.")
@@ -618,8 +679,10 @@ class equilibration_workflow:
 # performs a modified version of the Mann-Kendall test with confidence level (confidence) of default
 # 95%. If no evidence of trend is found, halt simulation. 
 
-# For multiple properties (supported: density, rg, potential), the maximum equilibration time is used as 
-# the common production start. If any property fails, simulation continues until either all properties pass or max_time_ns is reached.
+# For multiple properties (supported: density, rg, potential), each property is assessed
+# using its own RED production start. If any property fails, simulation continues until
+# either all properties pass or max_time_ns is reached. Each assessment is recorded
+# in results/equilibration_assessments.csv.
 
 # Assumed version of gromacs is non-mpi. Options below to specify gmx_mpi and also mdrun preamble e.g. mpirun
 
@@ -640,7 +703,7 @@ polymer = equilibrate_polymer(
 
 equilibrate = equilibration_workflow(polymer)
 equilibrate.run()
-        
+             
 
 
 
