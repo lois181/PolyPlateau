@@ -9,9 +9,6 @@ from tokenize import group
 import red
 import numpy as np
 import pandas as pd 
-from datetime import datetime, timedelta
-from mannkendall import mk_white
-from scipy.stats import kendalltau
 import warnings 
 import matplotlib.pyplot as plt
 import pymannkendall as mk
