@@ -13,5 +13,20 @@ From the project directory, run the following command to install the required Py
 ```bash
 python -m pip install -r requirements.txt
 ```
+Alternatively, install the following packages into your own environment:
+
+### Python dependencies
+
+| Package | Version |
+| --- | --- |
+| `numpy` | `2.2.6` |
+| `pandas` | `2.3.3` |
+| `matplotlib` | `3.10.7` |
+| `red-molsim` | `0.2.0` |
+| `pymannkendall` | `1.4.3` |
 
 ## Usage and Example
+
+### Concept 
+
+
