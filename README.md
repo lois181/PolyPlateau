@@ -29,4 +29,6 @@ Alternatively, install the following packages into your own environment:
 
 ### Concept 
 
+The workflow is summarised in the chart below:
 
+![PolyPlateau flowchart showing the GROMACS inputs, simulation loop, and per-property equilibration checks](./polyplateau-workflow.png)
