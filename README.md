@@ -51,7 +51,7 @@ GROMACS is used to extract the properties PolyPlateau tracks. These are currentl
 
 To calculate an initial guess of $t_0$, we implement the methodology as seen in the following work: Clark, F.; Cole, D. J.; Michel, J. Robust Automated Truncation Point Selection for Molecular Simulations. J. Chem. Theory Comput. 2024. https://doi.org/10.1021/acs.jctc.4c01359.
 
-This calculates the minimum long-run variance for different choices of $t_0$ using a Bartlett window method. We use the recommended window size of $\sqrt{N}$, where $N$ is the number of data points. The value of $t_0$ which minimises the long-run variance balances minimising the bias in the data with maximising the size of the identified production region. For more information, consult the work by Clark et al. which includes thorough testing on simulation data.
+This calculates the minimum squared standard error (SSE) for different choices of $t_0$ using a Bartlett window method. We use the recommended window size of $\sqrt{N}$, where $N$ is the number of data points. The value of $t_0$ which minimises the SSE balances minimising the bias in the data with maximising the size of the identified production region. For more information, consult the work by Clark et al. which includes thorough testing on simulation data.
 
 #### Step 5
 
