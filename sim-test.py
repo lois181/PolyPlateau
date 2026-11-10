@@ -687,114 +687,23 @@ class equilibration_workflow:
 # simulation that isn't a continuation of a pre-exisiting simulation (it relies on appending to the current xtc on every
 # simulation extension which is problematic if you've previously moved around files in GROMACS).
 
-polymer = equilibrate_polymer(
-    max_time_ns=50,
-    sim_len_ns=10,
-    prod_len=10,
-    equil_properties=["density", "potential"],
-    g_ver="gmx_mpi",
-    mdrun_preamble="mpirun",
-    confidence=99,
-    workdir=".",
-)
+# polymer = equilibrate_polymer(
+#     max_time_ns=50,
+#     sim_len_ns=10,
+#     prod_len=10,
+#     equil_properties=["density", "potential"],
+#     g_ver="gmx_mpi",
+#     mdrun_preamble="mpirun",
+#     confidence=99,
+#     workdir=".",
+# )
 
-equilibrate = equilibration_workflow(polymer)
-equilibrate.run()
+# equilibrate = equilibration_workflow(polymer)
+# equilibrate.run()
              
 
 
 
 
 
-########### OLD MK METHOD BELOW ################
-
-
-
-
-    # def perform_mann_kendall_test(self, data):
-    #     """Input: data array (1,).
-    #     Performs a Mann-Kendall test with trend-free pre-whitening according to Wang & Swail (2008).
-    #     Returns: MK p-value. Less than the confidence threshold rejects the null hypothesis (finds evidence of a trend)"""
-
-    #     # data is passed as an N-dimensional array depending on number of properties being monitored. MK test is performed on each property separately.
-
-    #     # pre-whiten data first
-
-    #     data = np.asarray(data, dtype=float)
-
-    #     times = data[:, 0] # first col is time 
-
-    #     if not np.all(np.isfinite(times)) or not np.all(np.diff(times) > 0): # safety check for something in the future 
-    #         raise ValueError("Time values must be finite and increasing. The problem may be with the GROMACS extension handling.")
-
-    #     date_list = []
-
-    #     # following is because mannkendall requires datetime objects for time series, so we convert with even intervals 
-    #     for t in (times-times[0]) / 1000: # elapsed time in ns
-    #         offset = timedelta(days=float(t)) # number of extra days
-    #         date = datetime(2000, 1, 1) + offset # convert to datetime starting January 1st 2000
-    #         date_list.append(date)
-
-    #     dates = np.array(date_list, dtype=object) # store new times as datetime objects 
-
-    #     results = {}
-
-    #     for column in range(1, data.shape[1]):
-    #         values = data[:, column]
-    #         valid = np.isfinite(values)
-
-    #         if not np.all(valid):
-    #             warnings.warn("Encountered non-finite values in data. These will be ignored.", RuntimeWarning, stacklevel=2)
-
-    #         if np.count_nonzero(valid) < 10:
-    #             raise ValueError("Not enough data for MK test.")
-
-    #         whitened = mk_white.prewhite(
-    #             values[valid].copy(),
-    #             dates[valid],
-    #             resolution=1e-4, # for ties
-    #             alpha_ak=95, # confidence level for detecting autocorrelation
-    #         )["tfpw_ws"]
-
-    #         whitened = np.asarray(whitened, dtype=float)
-    #         valid = np.isfinite(whitened)
-
-    #         if np.count_nonzero(~valid) > 0:
-    #             warnings.warn(
-    #                 f"Column {column}: discarded {np.count_nonzero(~valid)} of {len(whitened)} "
-    #                 "points after pre-whitening because they were NaN or infinite.",
-    #                 RuntimeWarning,
-    #                 stacklevel=2,
-    #             )
-
-    #         whitened = whitened[valid]
-
-    #         if len(whitened) < 10:
-    #             raise ValueError(f"Column {column}: Fewer than 10 valid data points after pre-whitening.")
-
-    #         print(f"Analysing {len(whitened)} valid data points for property number {column} after pre-whitening...")
-
-    #         if np.all(whitened == whitened[0]): # if all values are the same 
-    #             raise ValueError("All data values are identical. Something has gone wrong.")
-    #         else:
-    #             tau, p_value = kendalltau(
-    #                 np.arange(len(whitened)), whitened, method="auto"
-    #             )
-
-    #         if not np.isfinite(tau) or not np.isfinite(p_value):
-    #             raise ValueError(f"Column {column}: MK test returned an undefined result.")
-
-    #         results[column] = {
-    #             "tau": float(tau),
-    #             "p": float(p_value),
-    #             "significant": bool(p_value <= self.confidence),
-    #         }
-
-    #     for column, result in results.items():
-    #         print(
-    #             f"Column {column}: tau={result['tau']:.3f}, "
-    #             f"p={result['p']:.3f}, significant={result['significant']}"
-    #         )
-
-    #     return any(result["significant"] for result in results.values())        
-            
+  
